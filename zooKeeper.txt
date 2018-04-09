@@ -1,0 +1,176 @@
+Zookeeper
+
+===========================================
+==== Master–Worker Application ====
+===========================================
+For ZooKeeper, this architecture style is representative because it illustrates a number of popular tasks, like electing a master, keeping track of available 
+workers, and maintaining application metadata.
+
+To implement a master–worker system, we must solve three key problems:
+ - Master crashes
+ 	If the master is faulty and becomes unavailable, the system cannot allocate new tasks or reallocate tasks from workers that have also failed.
+ - Worker crashes
+ 	If a worker crashes, the tasks assigned to it will not be completed.
+ - Communication failures
+ 	If the master and a worker cannot exchange messages, the worker might not learn of new tasks assigned to it.
+
+ EXACTLY-ONCE AND AT-MOST-ONCE SEMANTICS
+Using locks for tasks (as with the case of master election) is not sufficient to avoid having tasks executed multiple times because we can have, 
+for example, the following succession of events:
+	1. Master M1 assigns Task T1 to Worker W1.
+	2. W1 acquires the lock for T1, executes it, and releases the lock.
+	3. Master M1 suspects that W1 has crashed and reassigns Task T1 to worker W2.
+	4. W2 acquires the lock for T1, executes it, and releases the lock
+
+Here, the lock over T1 did not prevent the task from being executed twice because the two workers did not interleave their steps when executing the task. 
+To deal with cases in which exactly-once or at-most-once semantics are required, an application relies on mechanisms that are specific to its nature. For 
+example, if application data has timestamps and a task is supposed to modify application data, then a successful execution of the task could be conditional 
+on the timestamp values of the data it touches. The application also needs the ability to roll back partial changes in the case that the application state is 
+not modified atomically; otherwise, it might end up with an inconsistent state.
+
+The bottom line is that we are having this discussion just to illustrate the difficulties with implementing these kinds of semantics for applications. It 
+is not within the scope of this book to discuss in detail the implementation of such semantics.
+
+Another important issue with communication failures is the impact they have on synchronization primitives like locks. Because nodes can crash and systems are prone 
+to network partitions, locks can be problematic: if a node crashes or gets partitioned away, the lock can prevent others from making progress. ZooKeeper consequently 
+needs to implement mechanisms to deal with such scenarios. First, it enables clients to say that some data in the ZooKeeper state is ephemeral. Second, the ZooKeeper 
+ensemble requires that clients periodically notify that they are alive. If a client fails to notify the ensemble in a timely manner, then all ephemeral state belonging 
+to this client is deleted. Using these two mechanisms, we are able to prevent clients individually from bringing the application to a halt in the presence of crashes 
+and communication failures.
+
+From the preceding descriptions, we can extract the following requirements for our master–worker architecture:
+ 1. Master election
+ 	 It is critical for progress to have a master available to assign tasks to workers.
+ 2. Crash detection
+ 	 The master must be able to detect when workers crash or disconnect.
+ 3. Group membership management
+ 	 The master must be able to figure out which workers are available to execute tasks.
+ 4. Metadata management
+ 	 The master and the workers must be able to store assignments and execution statuses in a reliable manner.
+
+ZooKeeper has been designed with mostly consistency and availability in mind, although it also provides read-only capability in the presence of network partitions.
+
+===========================================
+==== Getting to Grips with ZooKeeper ====
+===========================================
+ZooKeeper does not expose primitives directly. Instead, it exposes a file system-like API comprised of a small set of calls that enables applications to implement 
+their own primitives. We typically use recipes to denote these implementations of primitives. Recipes include ZooKeeper operations that manipulate small data nodes, 
+called znodes, that are organized hierarchically as a tree, just like in a file system.
+
+The root node contains four more nodes, and three of those nodes have nodes under them. The leaf nodes are the data:
+(/)-
+   |
+   |-- [server id] /master
+   |
+   |-- (workers)
+   |		   |
+   |  		   |-- [fii.com:2181] /workers/worker-1
+   |
+   |-- (tasks)
+   |         |
+   |         |-- [run cmd;] /taks/task-1-2
+   |
+   |-- (assign)
+   |          |
+   |          |-- (assifn/worker-1)
+   |                              |
+   |                              |-- [run cmd;] /assign/worker-1/task-1-1
+
+The absence of data often conveys important information about a znode. In a master–worker example, for instance, the absence of a 
+master znode means that no master is currently elected
+ * The /workers znode is the parent znode to all znodes representing a worker available in the system. Figure shows that one worker (foo.com:2181) is available.
+   If a worker becomes unavailable, its znode should be removed from /workers.
+ * The /tasks znode is the parent of all tasks created and waiting for workers to execute them. Clients of the master–worker application add new znodes as 
+   children of /tasks to represent new tasks and wait for znodes representing the status of the task.
+ * The /assign znode is the parent of all znodes representing an assignment of a task to a worker. When a master assigns a task to a worker, it adds a child znode to /assign
+
+Znodes may or may not contain data. If a znode contains any data, the data is stored as a byte array
+One important note is that ZooKeeper does not allow partial writes or reads of the znode data. When setting the data of a znode or reading it, 
+the content of the znode is replaced or read entirely.
+
+ZooKeeper clients connect to a ZooKeeper service and establish a session through which they make API calls.
+
+ --------- Different Modes for Znodes
+When creating a new znode, you also need to specify a mode. The different modes determine how the znode behaves.
+
+ 1. A znode can be either persistent or ephemeral. 
+     - A persistent znode /path can be deleted only through a call to delete. 
+     - An ephemeral znode, in contrast, is deleted if the client that created it crashes or simply closes its connection to ZooKeeper
+   Persistent znodes are useful when the znode stores some data on behalf of an application and this data needs to be preserved even after its creator is no longer 
+   part of the system. For example, in the master–worker example, we need to maintain the assignment of tasks to workers even when the master that performed the 
+   assignment crashes.
+   Ephemeral znodes convey information about some aspect of the application that must exist only while the session of its creator is valid. For example, the master 
+   znode in our master–worker example is ephemeral. Its presence implies that there is a master and the master is up and running.
+ 2. A znode can also be set to be sequential.
+   A sequential znode is assigned a unique, monotonically increasing integer. This sequence number is appended to the path used to create the znode. For example, 
+   if a client creates a sequential znode with the path /tasks/task-, ZooKeeper assigns a sequence number, say 1, and appends it to the path. The path of the 
+   znode becomes /tasks/task-1
+To summarize, there are four options for the mode of a znode: 
+   persistent, ephemeral, persistent_sequential, and ephemeral_sequential
+
+ -- Watches and Notifications
+To replace the client polling, we have opted for a mechanism based on notifications: clients register with ZooKeeper to receive notifications of changes to znodes.
+Registering to receive a notification for a given znode consists of setting a watch.
+! A watch is a one-shot operation, which means that it triggers one notification. To receive multiple notifications over time, the client must set a 
+! new watch upon receiving each notification.
+ZooKeeper produces different types of notifications, depending on how the watch corresponding to the notification was set. A client can set a watch for changes to the 
+data of a znode, changes to the children of a znode, or a znode being created or deleted. To set a watch, we can use any of the calls in the API that read the state of 
+ZooKeeper. These API calls give the option of passing a Watcher object or using the default watcher
+
+ -- Versions
+Each znode has a version number associated with it that is incremented every time its data changes. A couple of operations in the API can be executed conditionally: 
+setData and delete. Both calls take a version as an input parameter, and the operation succeeds only if the version passed by the client matches the current version on 
+the server. The use of versions is important when multiple ZooKeeper clients might be trying to perform operations over the same znode.
+
+ --------- ZooKeeper Architecture
+Applications make calls to ZooKeeper through a client library. The client library is responsible for the interaction with ZooKeeper servers
+ZooKeeper servers run in two modes: standalone and quorum. Standalone mode is pretty much what the term says: there is a single server, and ZooKeeper state is not 
+replicated. In quorum mode, a group of ZooKeeper servers, which we call a ZooKeeper ensemble, replicates the state, and together they serve client requests.
+
+                                                 ZooKeeper Ensemble
+[App Proc](Client Library) ---Session 0xAB----->   | Server |
+[App Proc](Client Library) ---Session 0x10----->   | Server |
+
+-- ZooKeeper Quorums
+In quorum mode, ZooKeeper replicates its data tree across all servers in the ensemble. But if a client had to wait for every server to store its data before continuing, the 
+delays might be unacceptable. In public administration, a quorum is the minimum number of legislators required to be present for a vote. In ZooKeeper, it is the minimum number 
+of servers that have to be running and available in order for ZooKeeper to work. This number is also the minimum number of servers that have to store a client’s data before 
+telling the client it is safely stored. For instance, we might have five ZooKeeper servers in total, but a quorum of three.
+-- Sessions
+Before executing any request against a ZooKeeper ensemble, a client must establish a session with the service. The concept of sessions is very important and quite critical 
+for the operation of ZooKeeper.
+All operations a client submits to ZooKeeper are associated to a session. When a session ends for any reason, the ephemeral nodes created during that session disappear.
+When a client creates a ZooKeeper handle using a specific language binding, it establishes a session with the service. The client initially connects to any server in the ensemble, 
+and only to a single server. It uses a TCP connection to communicate with the server, but the session may be moved to a different server if the client has not heard from its current 
+server for some time. Moving a session to a different server is handled transparently by the ZooKeeper client library.
+
+Sessions offer order guarantees, which means that requests in a session are executed in FIFO (first in, first out) order. Typically, a client has only a single session open, so its 
+requests are all executed in FIFO order. If a client has multiple concurrent sessions, FIFO ordering is not necessarily preserved across the sessions. Consecutive sessions of the 
+same client, even if they don’t overlap in time, also do not necessarily preserve FIFO order.
+
+===========================================
+==== Getting Started with the ZooKeeper API ====
+===========================================
+We can also see what is happening on the ZooKeeper service side. ZooKeeper has two main management interfaces: JMX and four-letter words
+To use these words, we need to telnet to the client port, 2181, and type them in
+
+Getting Mastership
+Now that we have a session, our Master needs to take mastership. We need to be careful, though, because there can be only one master. We also need to have multiple processes
+running that could become master just in case the acting master fails.
+We need two things to create /master. First, we need the initial data for the znode. Usually we put some information about the process that becomes the master in this initial
+data. For now, we will have each process pick a random server ID and use that for the initial data. We also need an access control list (ACL) for the new znode. Often ZooKeeper
+is used within a trusted environment, so an open ACL is used.
+There is a constant, ZooDefs.Ids.OPEN_ACL_UNSAFE, that gives all permissions to everyone. (As the name indicates, this is a very unsafe ACL to use in untrusted environments.)
+
+The ConnectionLossException occurs when a client becomes disconnected from a ZooKeeper server. This is usually due to a network error, such as a network partition, or the
+failure of a ZooKeeper server. When this exception occurs, it is unknown to the client whether the request was lost before the ZooKeeper servers processed it, or if they
+processed it but the client did not receive the response. As we described earlier, the ZooKeeper client library will reestablish the connection for future requests, but
+the process must figure out whether a pending request has been processed or whether it should reissue the request.
+
+The InterruptedException is caused by a client thread calling Thread.interrupt. This is often part of application shutdown, but it may also be used in other
+application-dependent ways. This exception literally interrupts the local client request processing in the process and leaves the request in an unknown state.
+
+Because both exceptions cause a break in the normal request processing, the developer cannot assume anything about the state of the request in process. When handling
+these exceptions, the developer must figure out the state of the system before proceeding. In case there was a leader election, we want to make sure that we haven’t
+been made the master without knowing it. If the create actually succeeded, no one else will be able to become master until the acting master dies, and if the acting
+master doesn’t know it has mastership, no process will be acting as the master.
