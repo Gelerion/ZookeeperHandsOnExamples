@@ -174,3 +174,33 @@ Because both exceptions cause a break in the normal request processing, the deve
 these exceptions, the developer must figure out the state of the system before proceeding. In case there was a leader election, we want to make sure that we haven’t
 been made the master without knowing it. If the create actually succeeded, no one else will be able to become master until the acting master dies, and if the acting
 master doesn’t know it has mastership, no process will be acting as the master.
+
+Order and connection loss exception
+ZooKeeper is very strict about maintaining order and has very strong ordering guarantees. However, care should be taken when thinking about ordering in the presence of
+multiple threads. One common scenario where multiple threads can cause errors involves retry logic in callbacks. When reissuing a request due to a ConnectionLossException,
+a new request is created and may therefore be ordered after requests issued on other threads that occurred after the original request.
+
+===========================================
+==== Dealing with State Change ====
+===========================================
+A watch is a one-time trigger associated with a znode and a type of event (e.g., data is set in the znode, or the znode is deleted). When the watch is triggered by an event,
+it generates a notification. A notification is a message to the application client that registered the watch to inform this client of the event.
+
+When an application process registers a watch to receive a notification, the watch is triggered at most once and upon the first event that matches the condition of the watch.
+For example, say that the client needs to know when a given znode /z is deleted (e.g., a backup master). The client executes an exists operation on /z with the watch flag
+set and waits for the notification. The notification comes in the form of a callback to the application client.
+
+Each watch is associated with the session in which the client sets it. If the session expires, pending watches are removed. Watches do, however, persist across connections
+to different servers. Say that a ZooKeeper client disconnects from a ZooKeeper server and connects to a different server in the ensemble. The client will send a list of
+outstanding watches. When re-registering the watch, the server will check to see if the watched znode has changed since the previous registration. If the znode has changed,
+a watch event will be sent to the client; otherwise, the watch will be re-registered at the new server. This behavior of re-registering watches can be turned off by setting
+the system property zookeeper.disableAutoWatchReset.
+
+Wait, Can I Miss Events with One-Time Triggers?
+The short answer is “yes”: an application can miss events between receiving a notification and registering for another watch. However, this issue deserves more discussion.
+Missing events is typically not a problem because any changes that have occurred during the period between receiving a notification and registering a new watch can be
+captured by reading the state of ZooKeeper directly.
+
+Say that a worker receives a notification indicating that a new task has been assigned to it. To receive the new task, the worker reads the list of tasks. If several more
+tasks have been assigned to the worker after it received the notification, reading the list of tasks via a getChildren call returns all tasks. The getChildren call also
+sets a new watch, guaranteeing that the worker will not miss tasks.

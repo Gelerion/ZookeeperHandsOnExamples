@@ -4,6 +4,7 @@ import org.apache.zookeeper.*;
 import org.apache.zookeeper.KeeperException.Code;
 
 import java.io.IOException;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
@@ -13,6 +14,7 @@ public class AsyncMaster implements Watcher {
 
     private String hostPort;
     private ZooKeeper zk;
+    private CountDownLatch latch = new CountDownLatch(1);
 
     private AsyncMaster(String hostPort) {
         this.hostPort = hostPort;
@@ -55,9 +57,11 @@ public class AsyncMaster implements Watcher {
                     checkMaster();
                     return;
                 case OK:
+                    latch.countDown();
                     isLeader = true;
                     break;
                 default:
+                    latch.countDown();
                     isLeader = false;
             }
             System.out.println("I'm " + (isLeader ? "" : "not ") + "the leader");
@@ -115,6 +119,9 @@ public class AsyncMaster implements Watcher {
     };
     //---------------------------------------------------------------------------------------------------------------
 
+    private void await() throws InterruptedException {
+        latch.await();
+    }
 
     @Override
     public void process(WatchedEvent event) {
@@ -130,10 +137,11 @@ public class AsyncMaster implements Watcher {
 
         m.runForMaster();
 
+        m.await();
         if(m.isLeader) {
             System.out.println("I'm the leader");
             // wait for a bit
-            Thread.sleep(60000);
+            Thread.sleep(600_000);
         }
         else {
             System.out.println("Someone else is the leader");

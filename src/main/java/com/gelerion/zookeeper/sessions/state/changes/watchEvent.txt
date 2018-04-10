@@ -1,0 +1,17 @@
+All read operations in the ZooKeeper API—getData, getChildren, and exists—have the option to set a watch on the znode they read.
+To use the watch mechanism, we need to implement the Watcher interface, which consists of implementing a process method:
+    public void process(WatchedEvent event);
+
+The WatchedEvent data structure contains the following:
+
+    1. The state of the ZooKeeper session (KeeperState): Disconnected, SyncConnected, AuthFailed, ConnectedReadOnly, SaslAuthenticated, or Expired
+    2. The event type (EventType): NodeCreated, NodeDeleted, NodeDataChanged, NodeChildrenChanged, or None
+    3. A znode path in the case that the event type is not None
+
+There are two types of watches: data watches and child watches. Creating, deleting, or setting the data of a znode successfully
+triggers a data watch. exists and getData both set data watches. Only getChildren sets child watches, which are triggered when a
+child znode is either created or deleted. For each event type, we have the following calls for setting a watch:
+    NodeCreated         - A watch is set with a call to exists.
+    NodeDeleted         - A watch is set with a call to either exists or getData.
+    NodeDataChanged     - A watch is set with either exists or getData.
+    NodeChildrenChanged - A watch is set with getChildren.
