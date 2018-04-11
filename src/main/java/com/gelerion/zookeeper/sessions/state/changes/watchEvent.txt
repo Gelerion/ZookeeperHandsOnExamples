@@ -15,3 +15,15 @@ child znode is either created or deleted. For each event type, we have the follo
     NodeDeleted         - A watch is set with a call to either exists or getData.
     NodeDataChanged     - A watch is set with either exists or getData.
     NodeChildrenChanged - A watch is set with getChildren.
+
+When creating a ZooKeeper object, we need to pass a default Watcher object. The ZooKeeper client uses this watcher to
+notify the application of changes to the ZooKeeper state, in case the state of the session changes. For event notifications
+related to ZooKeeper znodes, you can either use the default watcher or implement a different one. For example, the getData
+call has two different ways of setting a watch:
+    public byte[] getData(final String path, Watcher watcher, Stat stat);
+    public byte[] getData(String path, boolean watch, Stat stat);
+Both signatures pass the znode as the first argument. The first signature passes a new Watcher object (which we must have created).
+The second signature tells the client to use the default watcher, and only requires true as the second parameter of the call.
+The stat input parameter is an instance of the Stat structure that ZooKeeper uses to return information about the znode
+designated by path. The Stat structure contains information about the znode, such as the timestamp of the last change
+(zxid) that changed this znode and the number of children in the znode.

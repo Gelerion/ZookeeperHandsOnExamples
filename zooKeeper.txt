@@ -68,11 +68,11 @@ The root node contains four more nodes, and three of those nodes have nodes unde
    |
    |-- (tasks)
    |         |
-   |         |-- [run cmd;] /taks/task-1-2
+   |         |-- [run cmd;] /tasks/task-1-2
    |
    |-- (assign)
    |          |
-   |          |-- (assifn/worker-1)
+   |          |-- (assign/worker-1)
    |                              |
    |                              |-- [run cmd;] /assign/worker-1/task-1-1
 

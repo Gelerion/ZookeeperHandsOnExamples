@@ -1,4 +1,4 @@
-package com.gelerion.zookeeper.sessions.master.worker;
+package com.gelerion.zookeeper.sessions.master.worker.v1;
 
 import org.apache.zookeeper.*;
 import org.apache.zookeeper.KeeperException.Code;
